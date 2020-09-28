@@ -5,7 +5,7 @@ Unit tests for the backend connection arguments.
 from databases.backends.aiopg import AiopgBackend
 from databases.backends.mysql import MySQLBackend
 from databases.backends.postgres import PostgresBackend
-from databases.core import DatabaseURL
+from databases.core import DatabaseConfig
 from tests.test_databases import DATABASE_URLS, async_adapter
 
 
@@ -18,7 +18,7 @@ def test_postgres_pool_size():
 @async_adapter
 async def test_postgres_pool_size_connect():
     for url in DATABASE_URLS:
-        if DatabaseURL(url).dialect != "postgresql":
+        if DatabaseConfig.from_url(url).dialect != "postgresql":
             continue
         backend = PostgresBackend(url + "?min_size=1&max_size=20")
         await backend.connect()

@@ -4,8 +4,9 @@ import functools
 import logging
 import sys
 import typing
+from dataclasses import dataclass, asdict
 from types import TracebackType
-from urllib.parse import SplitResult, parse_qsl, urlsplit
+from urllib.parse import parse_qsl, urlsplit, urlencode, urlunsplit
 
 from sqlalchemy import text
 from sqlalchemy.sql import ClauseElement
@@ -51,21 +52,24 @@ class Database:
 
     def __init__(
         self,
-        url: typing.Union[str, "DatabaseURL"],
+        url: typing.Optional[str] = None,
+        config: typing.Optional["DatabaseConfig"] = None,
         *,
         force_rollback: bool = False,
         **options: typing.Any,
     ):
-        self.url = DatabaseURL(url)
+        if not url and not config:
+            raise RuntimeError("URL or Config must be specified")
+        self.config = config if config is not None else DatabaseConfig.from_url(url)
         self.options = options
         self.is_connected = False
 
         self._force_rollback = force_rollback
 
-        backend_str = self.SUPPORTED_BACKENDS[self.url.scheme]
+        backend_str = self.SUPPORTED_BACKENDS[self.config.scheme]
         backend_cls = import_from_string(backend_str)
         assert issubclass(backend_cls, DatabaseBackend)
-        self._backend = backend_cls(self.url, **self.options)
+        self._backend = backend_cls(self.config, **self.options)
 
         # Connections are stored as task-local state.
         self._connection_context = ContextVar("connection_context")  # type: ContextVar
@@ -83,7 +87,7 @@ class Database:
 
         await self._backend.connect()
         logger.info(
-            "Connected to database %s", self.url.obscure_password, extra=CONNECT_EXTRA
+            "Connected to database %s", self.config.obscure_password, extra=CONNECT_EXTRA
         )
         self.is_connected = True
 
@@ -116,7 +120,7 @@ class Database:
         await self._backend.disconnect()
         logger.info(
             "Disconnected from database %s",
-            self.url.obscure_password,
+            self.config.obscure_password,
             extra=DISCONNECT_EXTRA,
         )
         self.is_connected = False
@@ -387,113 +391,67 @@ class _EmptyNetloc(str):
         return True
 
 
-class DatabaseURL:
-    def __init__(self, url: typing.Union[str, "DatabaseURL"]):
-        self._url = str(url)
-
-    @property
-    def components(self) -> SplitResult:
-        if not hasattr(self, "_components"):
-            self._components = urlsplit(self._url)
-        return self._components
+@dataclass
+class DatabaseConfig:
+    driver: str
+    dialect: str
+    username: typing.Optional[str]
+    password: typing.Optional[str]
+    hostname: typing.Optional[str]
+    port: typing.Optional[int]
+    database: str
+    options: typing.Optional[dict]
 
     @property
     def scheme(self) -> str:
-        return self.components.scheme
+        if len(self.driver) > 0:
+            return self.dialect + "+" + self.driver
+        return self.dialect
 
-    @property
-    def dialect(self) -> str:
-        return self.components.scheme.split("+")[0]
+    def replace(self, **kwargs: typing.Any) -> "DatabaseConfig":
+        new_conf = DatabaseConfig(**asdict(self))
+        for key, val in kwargs.items():
+            new_conf.__setattr__(key, val)
+        return new_conf
 
-    @property
-    def driver(self) -> str:
-        if "+" not in self.components.scheme:
-            return ""
-        return self.components.scheme.split("+", 1)[1]
+    def obscure_password(self) -> "DatabaseConfig":
+        if not self.password:
+            return self
+        return self.replace(password="********")
 
-    @property
-    def username(self) -> typing.Optional[str]:
-        return self.components.username
-
-    @property
-    def password(self) -> typing.Optional[str]:
-        return self.components.password
-
-    @property
-    def hostname(self) -> typing.Optional[str]:
-        return self.components.hostname
-
-    @property
-    def port(self) -> typing.Optional[int]:
-        return self.components.port
-
-    @property
-    def netloc(self) -> typing.Optional[str]:
-        return self.components.netloc
-
-    @property
-    def database(self) -> str:
-        path = self.components.path
-        if path.startswith("/"):
-            path = path[1:]
-        return path
-
-    @property
-    def options(self) -> dict:
-        if not hasattr(self, "_options"):
-            self._options = dict(parse_qsl(self.components.query))
-        return self._options
-
-    def replace(self, **kwargs: typing.Any) -> "DatabaseURL":
-        if (
-            "username" in kwargs
-            or "password" in kwargs
-            or "hostname" in kwargs
-            or "port" in kwargs
-        ):
-            hostname = kwargs.pop("hostname", self.hostname)
-            port = kwargs.pop("port", self.port)
-            username = kwargs.pop("username", self.username)
-            password = kwargs.pop("password", self.password)
-
-            netloc = hostname
-            if port is not None:
-                netloc += f":{port}"
-            if username is not None:
-                userpass = username
-                if password is not None:
-                    userpass += f":{password}"
-                netloc = f"{userpass}@{netloc}"
-
-            kwargs["netloc"] = netloc
-
-        if "database" in kwargs:
-            kwargs["path"] = "/" + kwargs.pop("database")
-
-        if "dialect" in kwargs or "driver" in kwargs:
-            dialect = kwargs.pop("dialect", self.dialect)
-            driver = kwargs.pop("driver", self.driver)
-            kwargs["scheme"] = f"{dialect}+{driver}" if driver else dialect
-
-        if not kwargs.get("netloc", self.netloc):
-            # Using an empty string that evaluates as True means we end up
-            # with URLs like `sqlite:///database` instead of `sqlite:/database`
-            kwargs["netloc"] = _EmptyNetloc()
-
-        components = self.components._replace(**kwargs)
-        return self.__class__(components.geturl())
-
-    @property
-    def obscure_password(self) -> str:
-        if self.password:
-            return self.replace(password="********")._url
-        return self._url
-
-    def __str__(self) -> str:
-        return self._url
+    def to_url(self) -> str:
+        url = f"{self.scheme}://"
+        if self.username:
+            url += self.username
+            if self.password:
+                url += f":{self.password}"
+            url += "@"
+        if self.hostname:
+            url += self.hostname
+            if self.port:
+                url += f":{self.port}"
+        url += f"/{self.database}"
+        if self.options:
+            url += "?" + urlencode(self.options)
+        return url
 
     def __repr__(self) -> str:
-        return f"{self.__class__.__name__}({repr(self.obscure_password)})"
+        return f"{self.__class__.__name__}('{str(self.obscure_password())}')"
 
-    def __eq__(self, other: typing.Any) -> bool:
-        return str(self) == str(other)
+    def __str__(self) -> str:
+        return self.to_url()
+
+    @staticmethod
+    def from_url(url: str) -> "DatabaseConfig":
+        components = urlsplit(url)
+        scheme = components.scheme
+        return DatabaseConfig(
+            dialect=scheme.split("+")[0],
+            driver=scheme.split("+", 1)[1] if "+" in scheme else "",
+            username=components.username,
+            password=components.password,
+            hostname=components.hostname,
+            port=components.port,
+            database=components.path[1:] if components.path.startswith("/") else components.path,
+            options=dict(parse_qsl(components.query)),
+        )

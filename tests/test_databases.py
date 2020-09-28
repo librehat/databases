@@ -7,7 +7,7 @@ import os
 import pytest
 import sqlalchemy
 
-from databases import Database, DatabaseURL
+from databases import Database, DatabaseConfig
 
 assert "TEST_DATABASE_URLS" in os.environ, "TEST_DATABASE_URLS is not set."
 
@@ -75,7 +75,7 @@ prices = sqlalchemy.Table(
 def create_test_database():
     # Create test databases with tables creation
     for url in DATABASE_URLS:
-        database_url = DatabaseURL(url)
+        database_url = DatabaseConfig.from_url(url)
         if database_url.scheme == "mysql":
             url = str(database_url.replace(driver="pymysql"))
         elif database_url.scheme == "postgresql+aiopg":
@@ -88,7 +88,7 @@ def create_test_database():
 
     # Drop test databases
     for url in DATABASE_URLS:
-        database_url = DatabaseURL(url)
+        database_url = DatabaseConfig.from_url(url)
         if database_url.scheme == "mysql":
             url = str(database_url.replace(driver="pymysql"))
         elif database_url.scheme == "postgresql+aiopg":
@@ -371,7 +371,7 @@ async def test_execute_return_val(database_url):
             # As it's only one action within this cursor life cycle
             # It's recommended to use the `RETURNING` clause
             # For obtaining the record id
-            if database.url.scheme == "postgresql+aiopg":
+            if database.config.scheme == "postgresql+aiopg":
                 assert pk == 0
             else:
                 query = notes.select().where(notes.c.id == pk)
@@ -445,9 +445,9 @@ async def test_transaction_commit_serializable(database_url):
     Ensure that serializable transaction commit via extra parameters is supported.
     """
 
-    database_url = DatabaseURL(database_url)
+    database_config = DatabaseConfig.from_url(database_url)
 
-    if database_url.scheme != "postgresql":
+    if database_config.scheme != "postgresql":
         pytest.skip("Test (currently) only supports asyncpg")
 
     def insert_independently():
@@ -464,7 +464,7 @@ async def test_transaction_commit_serializable(database_url):
         query = notes.delete()
         conn.execute(query)
 
-    async with Database(database_url) as database:
+    async with Database(config=database_config) as database:
         async with database.transaction(force_rollback=True, isolation="serializable"):
             query = notes.select()
             results = await database.fetch_all(query=query)
@@ -805,7 +805,7 @@ async def test_queries_with_expose_backend_connection(database_url):
                 raw_connection = connection.raw_connection
 
                 # Insert query
-                if database.url.scheme in ["mysql", "postgresql+aiopg"]:
+                if database.config.scheme in ["mysql", "postgresql+aiopg"]:
                     insert_query = "INSERT INTO notes (text, completed) VALUES (%s, %s)"
                 else:
                     insert_query = "INSERT INTO notes (text, completed) VALUES ($1, $2)"
@@ -813,21 +813,21 @@ async def test_queries_with_expose_backend_connection(database_url):
                 # execute()
                 values = ("example1", True)
 
-                if database.url.scheme in ["mysql", "postgresql+aiopg"]:
+                if database.config.scheme in ["mysql", "postgresql+aiopg"]:
                     cursor = await raw_connection.cursor()
                     await cursor.execute(insert_query, values)
-                elif database.url.scheme == "postgresql":
+                elif database.config.scheme == "postgresql" or database.config.scheme == "postgres":
                     await raw_connection.execute(insert_query, *values)
-                elif database.url.scheme == "sqlite":
+                elif database.config.scheme == "sqlite":
                     await raw_connection.execute(insert_query, values)
 
                 # execute_many()
                 values = [("example2", False), ("example3", True)]
 
-                if database.url.scheme == "mysql":
+                if database.config.scheme == "mysql":
                     cursor = await raw_connection.cursor()
                     await cursor.executemany(insert_query, values)
-                elif database.url.scheme == "postgresql+aiopg":
+                elif database.config.scheme == "postgresql+aiopg":
                     cursor = await raw_connection.cursor()
                     # No async support for `executemany`
                     for value in values:
@@ -839,13 +839,13 @@ async def test_queries_with_expose_backend_connection(database_url):
                 select_query = "SELECT notes.id, notes.text, notes.completed FROM notes"
 
                 # fetch_all()
-                if database.url.scheme in ["mysql", "postgresql+aiopg"]:
+                if database.config.scheme in ["mysql", "postgresql+aiopg"]:
                     cursor = await raw_connection.cursor()
                     await cursor.execute(select_query)
                     results = await cursor.fetchall()
-                elif database.url.scheme == "postgresql":
+                elif database.config.scheme == "postgresql" or database.config.scheme == "postgres":
                     results = await raw_connection.fetch(select_query)
-                elif database.url.scheme == "sqlite":
+                elif database.config.scheme == "sqlite":
                     results = await raw_connection.execute_fetchall(select_query)
 
                 assert len(results) == 3
@@ -858,7 +858,7 @@ async def test_queries_with_expose_backend_connection(database_url):
                 assert results[2][2] == True
 
                 # fetch_one()
-                if database.url.scheme == "postgresql":
+                if database.config.scheme == "postgresql" or database.config.scheme == "postgres":
                     result = await raw_connection.fetchrow(select_query)
                 else:
                     cursor = await raw_connection.cursor()
@@ -872,23 +872,22 @@ async def test_queries_with_expose_backend_connection(database_url):
 
 @pytest.mark.parametrize("database_url", DATABASE_URLS)
 @async_adapter
-async def test_database_url_interface(database_url):
+async def test_database_config_interface(database_url):
     """
-    Test that Database instances expose a `.url` attribute.
+    Test that Database instances expose a `.config` attribute.
     """
     async with Database(database_url) as database:
-        assert isinstance(database.url, DatabaseURL)
-        assert database.url == database_url
+        assert isinstance(database.config, DatabaseConfig)
 
 
 @pytest.mark.parametrize("database_url", DATABASE_URLS)
 @async_adapter
 async def test_concurrent_access_on_single_connection(database_url):
-    database_url = DatabaseURL(database_url)
-    if database_url.dialect != "postgresql":
+    database_config = DatabaseConfig.from_url(database_url)
+    if database_config.dialect != "postgresql":
         pytest.skip("Test requires `pg_sleep()`")
 
-    async with Database(database_url, force_rollback=True) as database:
+    async with Database(config=database_config, force_rollback=True) as database:
 
         async def db_lookup():
             await database.fetch_one("SELECT pg_sleep(1)")
@@ -906,11 +905,11 @@ def test_global_connection_is_initialized_lazily(database_url):
     See https://github.com/encode/databases/issues/157 for more context.
     """
 
-    database_url = DatabaseURL(database_url)
-    if database_url.dialect != "postgresql":
+    database_config = DatabaseConfig.from_url(database_url)
+    if database_config.dialect != "postgresql":
         pytest.skip("Test requires `pg_sleep()`")
 
-    database = Database(database_url, force_rollback=True)
+    database = Database(config=database_config, force_rollback=True)
 
     @async_adapter
     async def run_database_queries():
@@ -934,11 +933,11 @@ async def test_iterate_outside_transaction_with_values(database_url):
     This is mentionned in both their documentation and their test suite.
     """
 
-    database_url = DatabaseURL(database_url)
-    if database_url.dialect == "mysql":
+    database_config = DatabaseConfig.from_url(database_url)
+    if database_config.dialect == "mysql":
         pytest.skip("MySQL does not support `FROM (VALUES ...)` (F641)")
 
-    async with Database(database_url) as database:
+    async with Database(config=database_config) as database:
         query = "SELECT * FROM (VALUES (1), (2), (3), (4), (5)) as t"
         iterate_results = []
 
@@ -956,11 +955,11 @@ async def test_iterate_outside_transaction_with_temp_table(database_url):
     temporary table instead of a list of values.
     """
 
-    database_url = DatabaseURL(database_url)
-    if database_url.dialect == "sqlite":
+    database_config = DatabaseConfig.from_url(database_url)
+    if database_config.dialect == "sqlite":
         pytest.skip("SQLite interface does not work with temporary tables.")
 
-    async with Database(database_url) as database:
+    async with Database(config=database_config) as database:
         query = "CREATE TEMPORARY TABLE no_transac(num INTEGER)"
         await database.execute(query)
 

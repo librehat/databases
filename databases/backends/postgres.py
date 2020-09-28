@@ -10,7 +10,7 @@ from sqlalchemy.sql.ddl import DDLElement
 from sqlalchemy.sql.schema import Column
 from sqlalchemy.types import TypeEngine
 
-from databases.core import LOG_EXTRA, DatabaseURL
+from databases.core import LOG_EXTRA, DatabaseConfig
 from databases.interfaces import ConnectionBackend, DatabaseBackend, TransactionBackend
 
 logger = logging.getLogger("databases")
@@ -21,9 +21,9 @@ _result_processors = {}  # type: dict
 
 class PostgresBackend(DatabaseBackend):
     def __init__(
-        self, database_url: typing.Union[DatabaseURL, str], **options: typing.Any
+        self, database_config: DatabaseConfig, **options: typing.Any
     ) -> None:
-        self._database_url = DatabaseURL(database_url)
+        self._database_config = database_config if isinstance(database_config, DatabaseConfig) else DatabaseConfig.from_url(database_config)
         self._options = options
         self._dialect = self._get_dialect()
         self._pool = None
@@ -42,7 +42,7 @@ class PostgresBackend(DatabaseBackend):
         return dialect
 
     def _get_connection_kwargs(self) -> dict:
-        url_options = self._database_url.options
+        url_options = self._database_config.options
 
         kwargs = {}
         min_size = url_options.get("min_size")
@@ -64,11 +64,11 @@ class PostgresBackend(DatabaseBackend):
         assert self._pool is None, "DatabaseBackend is already running"
         kwargs = self._get_connection_kwargs()
         self._pool = await asyncpg.create_pool(
-            host=self._database_url.hostname,
-            port=self._database_url.port,
-            user=self._database_url.username,
-            password=self._database_url.password,
-            database=self._database_url.database,
+            host=self._database_config.hostname,
+            port=self._database_config.port,
+            user=self._database_config.username,
+            password=self._database_config.password,
+            database=self._database_config.database,
             **kwargs,
         )
 

@@ -10,7 +10,7 @@ from sqlalchemy.sql import ClauseElement
 from sqlalchemy.sql.ddl import DDLElement
 from sqlalchemy.types import TypeEngine
 
-from databases.core import LOG_EXTRA, DatabaseURL
+from databases.core import LOG_EXTRA, DatabaseConfig
 from databases.interfaces import ConnectionBackend, DatabaseBackend, TransactionBackend
 
 logger = logging.getLogger("databases")
@@ -18,14 +18,14 @@ logger = logging.getLogger("databases")
 
 class SQLiteBackend(DatabaseBackend):
     def __init__(
-        self, database_url: typing.Union[DatabaseURL, str], **options: typing.Any
+        self, database_config: DatabaseConfig, **options: typing.Any
     ) -> None:
-        self._database_url = DatabaseURL(database_url)
+        self._database_config = database_config if isinstance(database_config, DatabaseConfig) else DatabaseConfig.from_url(database_config)
         self._options = options
         self._dialect = pysqlite.dialect(paramstyle="qmark")
         # aiosqlite does not support decimals
         self._dialect.supports_native_decimal = False
-        self._pool = SQLitePool(self._database_url, **self._options)
+        self._pool = SQLitePool(self._database_config, **self._options)
 
     async def connect(self) -> None:
         pass
@@ -51,13 +51,13 @@ class SQLiteBackend(DatabaseBackend):
 
 
 class SQLitePool:
-    def __init__(self, url: DatabaseURL, **options: typing.Any) -> None:
-        self._url = url
+    def __init__(self, config: DatabaseConfig, **options: typing.Any) -> None:
+        self._config = config
         self._options = options
 
     async def acquire(self) -> aiosqlite.Connection:
         connection = aiosqlite.connect(
-            database=self._url.database, isolation_level=None, **self._options
+            database=self._config.database, isolation_level=None, **self._options
         )
         await connection.__aenter__()
         return connection

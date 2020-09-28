@@ -6,7 +6,7 @@ from starlette.applications import Starlette
 from starlette.responses import JSONResponse
 from starlette.testclient import TestClient
 
-from databases import Database, DatabaseURL
+from databases import Database, DatabaseConfig
 
 assert "TEST_DATABASE_URLS" in os.environ, "TEST_DATABASE_URLS is not set."
 
@@ -27,11 +27,11 @@ notes = sqlalchemy.Table(
 def create_test_database():
     # Create test databases
     for url in DATABASE_URLS:
-        database_url = DatabaseURL(url)
-        if database_url.scheme == "mysql":
-            url = str(database_url.replace(driver="pymysql"))
-        elif database_url.scheme == "postgresql+aiopg":
-            url = str(database_url.replace(driver=None))
+        database_config = DatabaseConfig.from_url(url)
+        if database_config.scheme == "mysql":
+            url = str(database_config.replace(driver="pymysql"))
+        elif database_config.scheme == "postgresql+aiopg":
+            url = str(database_config.replace(driver=None))
         engine = sqlalchemy.create_engine(url)
         metadata.create_all(engine)
 
@@ -40,11 +40,11 @@ def create_test_database():
 
     # Drop test databases
     for url in DATABASE_URLS:
-        database_url = DatabaseURL(url)
-        if database_url.scheme == "mysql":
-            url = str(database_url.replace(driver="pymysql"))
-        elif database_url.scheme == "postgresql+aiopg":
-            url = str(database_url.replace(driver=None))
+        database_config = DatabaseConfig.from_url(url)
+        if database_config.scheme == "mysql":
+            url = str(database_config.replace(driver="pymysql"))
+        elif database_config.scheme == "postgresql+aiopg":
+            url = str(database_config.replace(driver=None))
         engine = sqlalchemy.create_engine(url)
         metadata.drop_all(engine)
 
